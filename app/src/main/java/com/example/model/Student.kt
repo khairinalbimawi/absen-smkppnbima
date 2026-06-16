@@ -39,5 +39,6 @@ data class AttendanceLog(
     val department: String,
     val status: String,          // "TERKIRIM" (Synced to GAS) / "GAGAL" (Failed) / "PENDING"
     val syncErrorMessage: String? = null,
-    val photoBase64: String? = null // Compressed Base64 String as fallback
+    val photoBase64: String? = null, // Compressed Base64 String as fallback
+    val logType: String = "MASUK" // "MASUK" atau "PULANG"
 )

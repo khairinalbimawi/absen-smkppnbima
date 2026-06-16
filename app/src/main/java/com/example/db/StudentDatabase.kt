@@ -33,7 +33,7 @@ interface AttendanceLogDao {
     suspend fun clearLogs()
 }
 
-@Database(entities = [Student::class, AttendanceLog::class], version = 1, exportSchema = false)
+@Database(entities = [Student::class, AttendanceLog::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun studentDao(): StudentDao
     abstract fun attendanceLogDao(): AttendanceLogDao

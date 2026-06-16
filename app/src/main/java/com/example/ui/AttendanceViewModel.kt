@@ -81,8 +81,24 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private val _isSending = MutableStateFlow(false)
     val isSending: StateFlow<Boolean> = _isSending.asStateFlow()
 
+    private val _isSyncingStudents = MutableStateFlow(false)
+    val isSyncingStudents: StateFlow<Boolean> = _isSyncingStudents.asStateFlow()
+
     private val _lastStatusMessage = MutableStateFlow<String?>(null)
     val lastStatusMessage: StateFlow<String?> = _lastStatusMessage.asStateFlow()
+
+    // Dynamic Time-Based Schedule Settings
+    private val _absenMasukStart = MutableStateFlow(prefs.getString("absen_masuk_start", "06:00") ?: "06:00")
+    val absenMasukStart: StateFlow<String> = _absenMasukStart.asStateFlow()
+
+    private val _absenMasukEnd = MutableStateFlow(prefs.getString("absen_masuk_end", "10:00") ?: "10:00")
+    val absenMasukEnd: StateFlow<String> = _absenMasukEnd.asStateFlow()
+
+    private val _absenPulangStart = MutableStateFlow(prefs.getString("absen_pulang_start", "14:00") ?: "14:00")
+    val absenPulangStart: StateFlow<String> = _absenPulangStart.asStateFlow()
+
+    private val _absenPulangEnd = MutableStateFlow(prefs.getString("absen_pulang_end", "19:00") ?: "19:00")
+    val absenPulangEnd: StateFlow<String> = _absenPulangEnd.asStateFlow()
 
     // Anti-double-record cooldown logic
     private val lastLoggedStudentTime = HashMap<String, Long>() // Map studentNo -> last log timestamp
@@ -107,6 +123,82 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun updateThreshold(newVal: Float) {
         _threshold.value = newVal
         prefs.edit().putFloat("threshold", newVal).apply()
+    }
+
+    fun updateSchedules(masukStart: String, masukEnd: String, pulangStart: String, pulangEnd: String) {
+        _absenMasukStart.value = masukStart
+        _absenMasukEnd.value = masukEnd
+        _absenPulangStart.value = pulangStart
+        _absenPulangEnd.value = pulangEnd
+        
+        prefs.edit()
+            .putString("absen_masuk_start", masukStart)
+            .putString("absen_masuk_end", masukEnd)
+            .putString("absen_pulang_start", pulangStart)
+            .putString("absen_pulang_end", pulangEnd)
+            .apply()
+        _lastStatusMessage.value = "Pengaturan jadwal presensi disimpan!"
+    }
+
+    fun getAttendanceTypeForCurrentTime(): String {
+        val format = SimpleDateFormat("HH:mm", Locale.getDefault())
+        val currentStr = format.format(Date())
+        
+        val startM = _absenMasukStart.value
+        val endM = _absenMasukEnd.value
+        val startP = _absenPulangStart.value
+        val endP = _absenPulangEnd.value
+        
+        return when {
+            isTimeInRange(currentStr, startM, endM) -> "MASUK"
+            isTimeInRange(currentStr, startP, endP) -> "PULANG"
+            else -> "DILUAR_JADWAL"
+        }
+    }
+
+    private fun isTimeInRange(current: String, start: String, end: String): Boolean {
+        return try {
+            val format = SimpleDateFormat("HH:mm", Locale.getDefault())
+            val curr = format.parse(current)
+            val st = format.parse(start)
+            val en = format.parse(end)
+            curr != null && st != null && en != null && !curr.before(st) && !curr.after(en)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun hasStudentAlreadyLoggedToday(studentNo: String, type: String): Boolean {
+        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val logsList = attendanceLogs.value
+        return logsList.any { log ->
+            val logDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(log.timestamp))
+            log.studentNo == studentNo && log.logType == type && logDateStr == todayStr
+        }
+    }
+
+    fun syncStudentsFromGas() {
+        viewModelScope.launch {
+            _isSyncingStudents.value = true
+            _lastStatusMessage.value = "Menghubungi server GAS untuk sinkronisasi..."
+            val result = mApi.fetchStudentDatabase(_gasUrl.value)
+            result.onSuccess { studentList ->
+                if (studentList.isEmpty()) {
+                    _lastStatusMessage.value = "Selesai: Tidak ada data siswa yang ditemukan."
+                } else {
+                    withContext(Dispatchers.IO) {
+                        repository.clearAllStudents()
+                        for (student in studentList) {
+                            repository.insertStudent(student)
+                        }
+                    }
+                    _lastStatusMessage.value = "Berhasil menyinkronkan ${studentList.size} siswa dari Google Sheets!"
+                }
+            }.onFailure { error ->
+                _lastStatusMessage.value = "Gagal Sinkronisasi: ${error.localizedMessage}"
+            }
+            _isSyncingStudents.value = false
+        }
     }
 
     /**
@@ -149,11 +241,26 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val now = System.currentTimeMillis()
                 val lastLogged = lastLoggedStudentTime[match.studentNo] ?: 0L
                 if (now - lastLogged > COOLDOWN_MS) {
-                    // Lock student temporarily to avoid double submission
-                    lastLoggedStudentTime[match.studentNo] = now
-                    
-                    // Trigger attendance submission asynchronously
-                    submitAttendanceLocalAndRemote(match, croppedFace)
+                    val logType = getAttendanceTypeForCurrentTime()
+                    if (logType == "DILUAR_JADWAL") {
+                        if (now - lastLogged > 30000L) { // Limit notifications to avoid continuous voice/text nagging
+                            lastLoggedStudentTime[match.studentNo] = now
+                            _lastStatusMessage.value = "Ditolak: Presensi saat ini di luar jadwal absensi."
+                        }
+                    } else {
+                        if (hasStudentAlreadyLoggedToday(match.studentNo, logType)) {
+                            if (now - lastLogged > 30000L) {
+                                lastLoggedStudentTime[match.studentNo] = now
+                                _lastStatusMessage.value = "${match.name} sudah absen $logType hari ini!"
+                            }
+                        } else {
+                            // Lock student temporarily to avoid double submission
+                            lastLoggedStudentTime[match.studentNo] = now
+                            
+                            // Trigger attendance submission asynchronously
+                            submitAttendanceLocalAndRemote(match, croppedFace, logType)
+                        }
+                    }
                 }
             }
         }
@@ -170,10 +277,20 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
      * 3. Send OkHttp payload to Google Apps Script
      * 4. Update local log as "TERKIRIM" or "GAGAL"
      */
-    fun submitAttendanceLocalAndRemote(student: Student, faceBitmap: Bitmap) {
+    fun submitAttendanceLocalAndRemote(student: Student, faceBitmap: Bitmap, forcedType: String? = null) {
         viewModelScope.launch {
+            val logType = forcedType ?: getAttendanceTypeForCurrentTime()
+            if (logType == "DILUAR_JADWAL") {
+                _lastStatusMessage.value = "Presensi ditolak: Di luar jadwal absensi harian!"
+                return@launch
+            }
+            if (hasStudentAlreadyLoggedToday(student.studentNo, logType)) {
+                _lastStatusMessage.value = "${student.name} sudah melakukan absensi $logType hari ini!"
+                return@launch
+            }
+
             _isSending.value = true
-            _lastStatusMessage.value = "Memproses presensi ${student.name}..."
+            _lastStatusMessage.value = "Memproses absensi $logType ${student.name}..."
 
             val now = System.currentTimeMillis()
             var base64String = ""
@@ -183,9 +300,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 try {
                     val baos = ByteArrayOutputStream()
                     // Compress face crop to 75% quality JPEG
-                    faceBitmap.compress(Bitmap.CompressFormat.JPEG, 75, baos)
-                    val bytes = baos.toByteArray()
-                    base64String = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    if (faceBitmap.isRecycled) {
+                        Log.e("AttendanceViewModel", "Bitmap is already recycled!")
+                    } else {
+                        faceBitmap.compress(Bitmap.CompressFormat.JPEG, 75, baos)
+                        val bytes = baos.toByteArray()
+                        base64String = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    }
                 } catch (e: Exception) {
                     Log.e("AttendanceViewModel", "Bitmap encoding failed", e)
                 }
@@ -199,7 +320,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 department = student.department,
                 status = "PENDING",
                 photoBase64 = base64String,
-                timestamp = now
+                timestamp = now,
+                logType = logType
             )
             val logId = repository.insertLog(log)
             val finalLogTemplate = log.copy(id = logId.toInt())
@@ -211,11 +333,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 name = student.name,
                 studentClass = student.studentClass,
                 department = student.department,
-                photoBase64 = base64String
+                photoBase64 = base64String,
+                logType = logType
             )
 
             apiResult.onSuccess { response ->
-                _lastStatusMessage.value = "Presensi ${student.name} berhasil terikirim!"
+                _lastStatusMessage.value = "Absensi $logType ${student.name} terkirim!"
                 repository.insertLog(finalLogTemplate.copy(status = "TERKIRIM", syncErrorMessage = "Res: $response"))
             }.onFailure { error ->
                 _lastStatusMessage.value = "Gagal kirim ke GAS: ${error.localizedMessage}"
@@ -239,7 +362,26 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 embedding = embeddingStr
             )
             repository.insertStudent(newStudent)
-            _lastStatusMessage.value = "Siswa ${name} berhasil didaftarkan secara lokal!"
+            _lastStatusMessage.value = "Siswa ${name} didaftarkan lokal!"
+
+            if (_gasUrl.value.isNotBlank()) {
+                _lastStatusMessage.value = "Menyinkronkan ${name} ke Google Sheets..."
+                val result = mApi.registerStudent(
+                    gasUrl = _gasUrl.value,
+                    studentNo = no,
+                    name = name,
+                    studentClass = sClass,
+                    department = dept,
+                    embeddingStr = embeddingStr
+                )
+                result.onSuccess {
+                    _lastStatusMessage.value = "Siswa ${name} terdaftar & sinkron!"
+                }.onFailure { err ->
+                    _lastStatusMessage.value = "Terdaftar lokal, gagal ke GAS: ${err.localizedMessage}"
+                }
+            } else {
+                _lastStatusMessage.value = "Siswa ${name} terdaftar secara lokal!"
+            }
         }
     }
 

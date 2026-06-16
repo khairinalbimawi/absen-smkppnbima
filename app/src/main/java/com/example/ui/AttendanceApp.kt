@@ -96,6 +96,17 @@ fun AttendanceApp(viewModel: AttendanceViewModel) {
     val threshold by viewModel.threshold.collectAsStateWithLifecycle()
     var editGasUrl by remember(gasUrl) { mutableStateOf(gasUrl) }
 
+    // Dynamic Schedules from ViewModel
+    val absenMasukStart by viewModel.absenMasukStart.collectAsStateWithLifecycle()
+    val absenMasukEnd by viewModel.absenMasukEnd.collectAsStateWithLifecycle()
+    val absenPulangStart by viewModel.absenPulangStart.collectAsStateWithLifecycle()
+    val absenPulangEnd by viewModel.absenPulangEnd.collectAsStateWithLifecycle()
+
+    var editMasukStart by remember(absenMasukStart) { mutableStateOf(absenMasukStart) }
+    var editMasukEnd by remember(absenMasukEnd) { mutableStateOf(absenMasukEnd) }
+    var editPulangStart by remember(absenPulangStart) { mutableStateOf(absenPulangStart) }
+    var editPulangEnd by remember(absenPulangEnd) { mutableStateOf(absenPulangEnd) }
+
     // Directory Search & Filter States
     var studentSearchQuery by remember { mutableStateOf("") }
     var studentFilterClass by remember { mutableStateOf("SEMUA") } // "SEMUA", "ATPH", "ATU", "APHP"
@@ -237,129 +248,378 @@ fun AttendanceApp(viewModel: AttendanceViewModel) {
         ) {
             when (activeTab) {
                 0 -> {
-                    // TAB 0: Active Camera Attendance Preview
+                    // TAB 0: Active Camera Attendance Preview with Embedded High-Tech Stats Dashboard
                     if (cameraPermissionState.status.isGranted) {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            // Camera preview binding keyed on isFrontCamera to trigger rebuilds on switch
-                            key(isFrontCamera) {
-                                CameraPreviewContainer(
-                                    isFrontCamera = isFrontCamera,
-                                    viewModel = viewModel
-                                )
+                        val todayStr = remember(logs) {
+                            val sdf = SimpleDateFormat("dd MMMM yyyy", Locale("id", "ID"))
+                            sdf.format(Date())
+                        }
+                        val currentScheduleType = viewModel.getAttendanceTypeForCurrentTime()
+                        
+                        val todayLogs = remember(logs) {
+                            val todayDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                            logs.filter { log ->
+                                SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(log.timestamp)) == todayDateStr
                             }
+                        }
+                        val presentTodayCount = remember(todayLogs) { todayLogs.map { it.studentNo }.distinct().size }
+                        val masukCount = remember(todayLogs) { todayLogs.filter { it.logType == "MASUK" }.map { it.studentNo }.distinct().size }
+                        val pulangCount = remember(todayLogs) { todayLogs.filter { it.logType == "PULANG" }.map { it.studentNo }.distinct().size }
+                        val isSyncingStudents by viewModel.isSyncingStudents.collectAsStateWithLifecycle()
 
-                            // Dynamic box vector drawing on overlay Canvas
-                            FaceBoundingBoxOverlay(detectionState = detectionState)
-
-                            // Top left GAS status indicator (biometric connected state)
-                            Row(
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // --- ABSENSI DASHBOARD PANEL ---
+                            Card(
                                 modifier = Modifier
-                                    .align(Alignment.TopStart)
-                                    .padding(16.dp)
-                                    .background(SleekSurface.copy(alpha = 0.85f), RoundedCornerShape(100.dp))
-                                    .border(1.dp, SleekDivider, RoundedCornerShape(100.dp))
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                                    .border(1.dp, SleekDivider, RoundedCornerShape(16.dp)),
+                                colors = CardDefaults.cardColors(containerColor = SleekSurface),
+                                shape = RoundedCornerShape(16.dp)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .background(if (gasUrl.isNotBlank()) GreenSuccess else Color.Gray, CircleShape)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (gasUrl.isNotBlank()) "GAS Endpoint: Connected" else "GAS: Disconnected",
-                                    color = SleekOnBackground,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    // Row 1: Session & Date
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                text = todayStr,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                color = SleekOnBackground
+                                            )
+                                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                                                val (sessionText, sessionColor) = when (currentScheduleType) {
+                                                    "MASUK" -> "SESI ABSEN MASUK AKTIF" to GreenSuccess
+                                                    "PULANG" -> "SESI ABSEN PULANG AKTIF" to Color(0xFFFF9100)
+                                                    else -> "DILUAR JADWAL ABSENSI" to Color.Gray
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(6.dp)
+                                                        .background(sessionColor, CircleShape)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = sessionText,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Black,
+                                                    color = sessionColor
+                                                )
+                                            }
+                                        }
+
+                                        // Sync GAS Button right in the Dashboard
+                                        OutlinedButton(
+                                            onClick = { viewModel.syncStudentsFromGas() },
+                                            enabled = !isSyncingStudents,
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, SleekPrimary.copy(alpha = 0.5f)),
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                            colors = ButtonDefaults.outlinedButtonColors(contentColor = SleekPrimary),
+                                            modifier = Modifier.height(30.dp)
+                                        ) {
+                                            if (isSyncingStudents) {
+                                                CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp, color = SleekPrimary)
+                                            } else {
+                                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(12.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("GEN GAS SYNC", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // --- DUAL JADWAL PERIOD VISUAL STATUS INDICATORS ---
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        val isMasukActive = currentScheduleType == "MASUK"
+                                        val isPulangActive = currentScheduleType == "PULANG"
+
+                                        // Check-in / Absen Masuk Period Card
+                                        Card(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .border(
+                                                    width = 1.3.dp,
+                                                    color = if (isMasukActive) GreenSuccess else SleekDivider,
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = if (isMasukActive) GreenSuccess.copy(alpha = 0.08f) else SleekSurface
+                                            ),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(10.dp)
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.CheckCircle,
+                                                            contentDescription = "Check-in",
+                                                            tint = if (isMasukActive) GreenSuccess else SleekOnBackground.copy(alpha = 0.4f),
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text(
+                                                            text = "Check-In",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isMasukActive) GreenSuccess else SleekOnBackground
+                                                        )
+                                                    }
+
+                                                    // Status pill
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .background(
+                                                                color = if (isMasukActive) GreenSuccess.copy(alpha = 0.2f) else SleekDivider,
+                                                                shape = RoundedCornerShape(4.dp)
+                                                            )
+                                                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (isMasukActive) "AKTIF" else "TUTUP",
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Black,
+                                                            color = if (isMasukActive) GreenSuccess else SleekOnBackground.copy(alpha = 0.4f)
+                                                        )
+                                                    }
+                                                }
+
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = "Absen Masuk",
+                                                    fontSize = 9.sp,
+                                                    color = SleekOnBackground.copy(alpha = 0.5f)
+                                                )
+                                                Text(
+                                                    text = "$absenMasukStart - $absenMasukEnd",
+                                                    fontSize = 13.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = SleekOnBackground
+                                                )
+                                            }
+                                        }
+
+                                        // Check-out / Absen Pulang Period Card
+                                        Card(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .border(
+                                                    width = 1.3.dp,
+                                                    color = if (isPulangActive) Color(0xFFFF9100) else SleekDivider,
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = if (isPulangActive) Color(0xFFFF9100).copy(alpha = 0.08f) else SleekSurface
+                                            ),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(10.dp)
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.ExitToApp,
+                                                            contentDescription = "Check-out",
+                                                            tint = if (isPulangActive) Color(0xFFFF9100) else SleekOnBackground.copy(alpha = 0.4f),
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(4.dp))
+                                                        Text(
+                                                            text = "Check-Out",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isPulangActive) Color(0xFFFF9100) else SleekOnBackground
+                                                        )
+                                                    }
+
+                                                    // Status pill
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .background(
+                                                                color = if (isPulangActive) Color(0xFFFF9100).copy(alpha = 0.2f) else SleekDivider,
+                                                                shape = RoundedCornerShape(4.dp)
+                                                            )
+                                                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (isPulangActive) "AKTIF" else "TUTUP",
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Black,
+                                                            color = if (isPulangActive) Color(0xFFFF9100) else SleekOnBackground.copy(alpha = 0.4f)
+                                                        )
+                                                    }
+                                                }
+
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Text(
+                                                    text = "Absen Pulang",
+                                                    fontSize = 9.sp,
+                                                    color = SleekOnBackground.copy(alpha = 0.5f)
+                                                )
+                                                Text(
+                                                    text = "$absenPulangStart - $absenPulangEnd",
+                                                    fontSize = 13.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = SleekOnBackground
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Divider(color = SleekDivider)
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // Row 2: Stats Grid
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        StatisticItem(
+                                            weight = 1f,
+                                            title = "TOTAL SISWA",
+                                            value = "${students.size}",
+                                            icon = Icons.Default.Person,
+                                            tintColor = SleekPrimary
+                                        )
+                                        StatisticItem(
+                                            weight = 1f,
+                                            title = "SUDAH MASUK",
+                                            value = "$masukCount",
+                                            icon = Icons.Default.CheckCircle,
+                                            tintColor = GreenSuccess
+                                        )
+                                        StatisticItem(
+                                            weight = 1f,
+                                            title = "SUDAH PULANG",
+                                            value = "$pulangCount",
+                                            icon = Icons.Default.ExitToApp,
+                                            tintColor = Color(0xFFFF9100)
+                                        )
+                                    }
+                                }
                             }
 
-                            // Interface buttons inside camera view (e.g. Flip camera)
+                            // --- ACTIVE CAMERA VIEWPORT ---
                             Box(
                                 modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(16.dp)
-                                ) {
-                                FloatingActionButton(
-                                    onClick = { isFrontCamera = !isFrontCamera },
-                                    containerColor = SleekSurface.copy(alpha = 0.8f),
-                                    contentColor = SleekPrimary,
-                                    modifier = Modifier.testTag("flip_camera_button")
-                                ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = "Putar Kamera")
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .border(1.dp, SleekDivider, RoundedCornerShape(20.dp))
+                                    .background(Color.Black)
+                            ) {
+                                key(isFrontCamera) {
+                                    CameraPreviewContainer(
+                                        isFrontCamera = isFrontCamera,
+                                        viewModel = viewModel
+                                    )
                                 }
-                            }
 
-                            // Center high-tech scanning indicator (only when scanning/no-face)
-                            if (detectionState is DetectionState.NoFace) {
+                                FaceBoundingBoxOverlay(detectionState = detectionState)
+
+                                // Flip camera FAB overlay inside viewport
                                 Box(
                                     modifier = Modifier
-                                        .align(Alignment.Center)
-                                        .size(240.dp),
-                                    contentAlignment = Alignment.Center
+                                        .align(Alignment.TopEnd)
+                                        .padding(12.dp)
                                 ) {
-                                    // Circular rotating outline
+                                    FloatingActionButton(
+                                        onClick = { isFrontCamera = !isFrontCamera },
+                                        containerColor = SleekSurface.copy(alpha = 0.85f),
+                                        contentColor = SleekPrimary,
+                                        modifier = Modifier.size(42.dp).testTag("flip_camera_button")
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Putar Kamera", modifier = Modifier.size(18.dp))
+                                    }
+                                }
+
+                                // Interactive Face scanning radar centered
+                                if (detectionState is DetectionState.NoFace) {
                                     Box(
                                         modifier = Modifier
-                                            .fillMaxSize()
-                                            .rotate(rotationAngle)
-                                            .border(
-                                                width = 3.dp,
-                                                brush = androidx.compose.ui.graphics.Brush.sweepGradient(
-                                                    listOf(SleekPrimary, Color.Transparent)
-                                                ),
-                                                shape = CircleShape
-                                            )
-                                    )
-                                    // Static soft outer circle
-                                    Box(
-                                        modifier = Modifier
-                                            .size(210.dp)
-                                            .border(1.dp, SleekPrimary.copy(alpha = 0.3f), CircleShape)
-                                    )
-                                    
-                                    Icon(
-                                        Icons.Default.Face,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(56.dp),
-                                        tint = SleekPrimary.copy(alpha = 0.6f)
-                                    )
+                                            .align(Alignment.Center)
+                                            .size(160.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .rotate(rotationAngle)
+                                                .border(
+                                                    width = 2.dp,
+                                                    brush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                                                        listOf(SleekPrimary, Color.Transparent)
+                                                    ),
+                                                    shape = CircleShape
+                                                )
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .size(130.dp)
+                                                .border(1.dp, SleekPrimary.copy(alpha = 0.25f), CircleShape)
+                                        )
+                                        Icon(
+                                            Icons.Default.Face,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(36.dp),
+                                            tint = SleekPrimary.copy(alpha = 0.5f)
+                                        )
+                                    }
                                 }
                             }
 
-                            // Live feedback indicator panel at the bottom center of camera
-                            Column(
+                            // --- LIVE FEEDBACK PANEL ---
+                            Box(
                                 modifier = Modifier
-                                    .align(Alignment.BottomCenter)
                                     .fillMaxWidth()
-                                    .padding(16.dp)
-                                    .background(SleekSurface, shape = RoundedCornerShape(24.dp))
-                                    .border(1.dp, SleekDivider, RoundedCornerShape(24.dp))
-                                    .padding(16.dp)
+                                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+                                    .background(SleekSurface, shape = RoundedCornerShape(20.dp))
+                                    .border(1.dp, SleekDivider, RoundedCornerShape(20.dp))
+                                    .padding(12.dp)
                             ) {
                                 when (val state = detectionState) {
                                     is DetectionState.NoFace -> {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             CircularProgressIndicator(
-                                                modifier = Modifier.size(20.dp),
+                                                modifier = Modifier.size(16.dp),
                                                 strokeWidth = 2.dp,
                                                 color = SleekPrimary
                                             )
-                                            Spacer(modifier = Modifier.width(12.dp))
+                                            Spacer(modifier = Modifier.width(10.dp))
                                             Text(
                                                 "Mendeteksi wajah...",
-                                                fontSize = 14.sp,
+                                                fontSize = 12.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = SleekOnBackground
                                             )
                                         }
-                                        Text(
-                                            "Posisikan wajah Anda tepat di depan kamera perekaman harian.",
-                                            fontSize = 12.sp,
-                                            color = SleekOnBackground.copy(alpha = 0.6f),
-                                            modifier = Modifier.padding(top = 6.dp)
-                                        )
                                     }
                                     is DetectionState.FaceDetected -> {
                                         val matchPercent = (state.matchScore * 100).coerceIn(0f, 100f)
@@ -370,146 +630,116 @@ fun AttendanceApp(viewModel: AttendanceViewModel) {
                                                 modifier = Modifier.fillMaxWidth(),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                // Profile image in target frame with dual rings and check indicator
-                                                Box(modifier = Modifier.size(68.dp)) {
+                                                Box(modifier = Modifier.size(52.dp)) {
                                                     Image(
                                                         bitmap = state.croppedFace.asImageBitmap(),
                                                         contentDescription = "Deteksi Wajah",
                                                         modifier = Modifier
-                                                            .size(64.dp)
-                                                            .clip(RoundedCornerShape(16.dp))
-                                                            .border(2.dp, if (student != null) GreenSuccess else SleekOutline, RoundedCornerShape(16.dp)),
+                                                            .size(48.dp)
+                                                            .clip(RoundedCornerShape(12.dp))
+                                                            .border(1.5.dp, if (student != null) GreenSuccess else SleekOutline, RoundedCornerShape(12.dp)),
                                                         contentScale = ContentScale.Crop
                                                     )
                                                     if (student != null) {
                                                         Box(
                                                             modifier = Modifier
                                                                 .align(Alignment.BottomEnd)
-                                                                .offset(x = 4.dp, y = 4.dp)
-                                                                .size(20.dp)
+                                                                .size(14.dp)
                                                                 .background(GreenSuccess, CircleShape)
-                                                                .border(2.dp, SleekSurface, CircleShape),
+                                                                .border(1.dp, SleekSurface, CircleShape),
                                                             contentAlignment = Alignment.Center
                                                         ) {
                                                             Icon(
                                                                 Icons.Default.Check,
                                                                 contentDescription = null,
                                                                 tint = Color.White,
-                                                                modifier = Modifier.size(12.dp)
+                                                                modifier = Modifier.size(9.dp)
                                                             )
                                                         }
                                                     }
                                                 }
                                                 
-                                                Spacer(modifier = Modifier.width(16.dp))
+                                                Spacer(modifier = Modifier.width(12.dp))
 
                                                 Column(modifier = Modifier.weight(1f)) {
                                                     if (student != null) {
                                                         Text(
                                                             text = student.name.uppercase(),
                                                             fontWeight = FontWeight.Bold,
-                                                            fontSize = 16.sp,
+                                                            fontSize = 14.sp,
                                                             color = SleekOnBackground
                                                         )
                                                         Text(
-                                                            text = "NIS: ${student.studentNo}",
-                                                            fontSize = 12.sp,
+                                                            text = "NIS: ${student.studentNo} • Kelas: ${student.studentClass}",
+                                                            fontSize = 11.sp,
                                                             color = SleekOnBackground.copy(alpha = 0.6f)
                                                         )
-                                                        
-                                                        Row(
-                                                            modifier = Modifier.padding(top = 4.dp),
-                                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                                        ) {
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .background(SleekSecondary, RoundedCornerShape(4.dp))
-                                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = student.studentClass,
-                                                                    color = SleekPrimary,
-                                                                    fontSize = 9.sp,
-                                                                    fontWeight = FontWeight.Bold
-                                                                )
-                                                            }
-                                                            Box(
-                                                                modifier = Modifier
-                                                                    .background(SleekSecondary, RoundedCornerShape(4.dp))
-                                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                                            ) {
-                                                                Text(
-                                                                    text = if (student.department.contains("Tanaman")) "XI ATPH" else "AGRIBISNIS",
-                                                                    color = SleekPrimary,
-                                                                    fontSize = 9.sp,
-                                                                    fontWeight = FontWeight.Bold
-                                                                )
-                                                            }
-                                                        }
                                                     } else {
                                                         Text(
                                                             text = "Wajah Tidak Dikenali",
                                                             fontWeight = FontWeight.Bold,
-                                                            fontSize = 16.sp,
+                                                            fontSize = 14.sp,
                                                             color = MaterialTheme.colorScheme.error
                                                         )
                                                         Text(
-                                                            text = "Skor tertinggi: %.1f%% (Batas threshold: %.1f%%)".format(matchPercent, threshold * 100),
-                                                            fontSize = 12.sp,
+                                                            text = "Skor tertinggi: %.1f%% (Batas: %.1f%%)".format(matchPercent, threshold * 100),
+                                                            fontSize = 11.sp,
                                                             color = SleekOnBackground.copy(alpha = 0.7f)
                                                         )
                                                     }
                                                 }
                                                 
-                                                // Match score badge
-                                                Column(
-                                                    horizontalAlignment = Alignment.End,
-                                                    modifier = Modifier.padding(start = 8.dp)
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(SleekOnPrimary, RoundedCornerShape(100.dp))
+                                                        .border(1.dp, SleekPrimary.copy(alpha = 0.3f), RoundedCornerShape(100.dp))
+                                                        .padding(horizontal = 8.dp, vertical = 3.dp)
                                                 ) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .background(SleekOnPrimary, RoundedCornerShape(100.dp))
-                                                            .border(1.dp, SleekPrimary.copy(alpha = 0.3f), RoundedCornerShape(100.dp))
-                                                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = "COS_SIM: %.4f".format(state.matchScore),
-                                                            color = SleekPrimary,
-                                                            fontSize = 10.sp,
-                                                            fontFamily = FontFamily.Monospace,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                    }
+                                                    Text(
+                                                        text = "SIM: %.3f".format(state.matchScore),
+                                                        color = SleekPrimary,
+                                                        fontSize = 9.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
                                                 }
                                             }
 
                                             if (student != null) {
-                                                Spacer(modifier = Modifier.height(12.dp))
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                val logType = viewModel.getAttendanceTypeForCurrentTime()
+                                                val alreadyAbsen = viewModel.hasStudentAlreadyLoggedToday(student.studentNo, logType)
+                                                
                                                 Button(
                                                     onClick = {
                                                         viewModel.submitAttendanceLocalAndRemote(student, state.croppedFace)
                                                     },
+                                                    enabled = logType != "DILUAR_JADWAL" && !alreadyAbsen,
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .height(48.dp)
+                                                        .height(38.dp)
                                                         .testTag("kirim_presensi_button"),
                                                     colors = ButtonDefaults.buttonColors(
                                                         containerColor = SleekPrimary,
                                                         contentColor = SleekOnPrimary
                                                     ),
-                                                    shape = RoundedCornerShape(14.dp)
+                                                    shape = RoundedCornerShape(10.dp)
                                                 ) {
-                                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
-                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
                                                     Text(
-                                                        text = "KIRIM DATA PRESENSI",
+                                                        text = when {
+                                                            logType == "DILUAR_JADWAL" -> "BUKAN JADWAL PRESENSI"
+                                                            alreadyAbsen -> "SUDAH ABSEN $logType HARI INI"
+                                                            else -> "KIRIM PRESENSI $logType"
+                                                        },
                                                         fontWeight = FontWeight.Black,
-                                                        fontSize = 12.sp,
-                                                        letterSpacing = 1.sp
+                                                        fontSize = 11.sp,
+                                                        letterSpacing = 0.5.sp
                                                     )
                                                 }
                                             } else {
-                                                Spacer(modifier = Modifier.height(10.dp))
+                                                Spacer(modifier = Modifier.height(8.dp))
                                                 Button(
                                                     onClick = {
                                                         activeFaceEmbeddingForEnroll = state.embedding
@@ -519,15 +749,15 @@ fun AttendanceApp(viewModel: AttendanceViewModel) {
                                                         showEnrollDialog = true
                                                     },
                                                     colors = ButtonDefaults.buttonColors(containerColor = SleekSecondary),
-                                                    shape = RoundedCornerShape(10.dp),
+                                                    shape = RoundedCornerShape(8.dp),
                                                     modifier = Modifier
                                                         .fillMaxWidth()
-                                                        .height(36.dp)
+                                                        .height(30.dp)
                                                         .testTag("quick_register_button")
                                                 ) {
-                                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
                                                     Spacer(modifier = Modifier.width(4.dp))
-                                                    Text("Daftarkan Wajah Baru", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                                    Text("Daftarkan Sebagai Siswa Baru", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                                 }
                                             }
                                         }
@@ -861,6 +1091,93 @@ fun AttendanceApp(viewModel: AttendanceViewModel) {
                             color = SleekOnBackground.copy(alpha = 0.5f),
                             modifier = Modifier.padding(bottom = 24.dp)
                         )
+
+                        // SECTION: Jadwal Presensi Config
+                        Text(
+                            text = "Konfigurasi Jadwal Presensi Harian",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 16.sp,
+                            color = SleekOnBackground,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                        Text(
+                            text = "Tentukan format 24 jam (HH:mm) kapan siswa diizinkan melakukan absen masuk dan pulang.",
+                            fontSize = 11.sp,
+                            color = SleekOnBackground.copy(alpha = 0.5f),
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = editMasukStart,
+                                onValueChange = { editMasukStart = it },
+                                label = { Text("Masuk Mulai", fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = SleekPrimary,
+                                    unfocusedBorderColor = SleekOutline,
+                                    focusedTextColor = SleekOnBackground,
+                                    unfocusedTextColor = SleekOnBackground
+                                )
+                            )
+                            OutlinedTextField(
+                                value = editMasukEnd,
+                                onValueChange = { editMasukEnd = it },
+                                label = { Text("Masuk Selesai", fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = SleekPrimary,
+                                    unfocusedBorderColor = SleekOutline,
+                                    focusedTextColor = SleekOnBackground,
+                                    unfocusedTextColor = SleekOnBackground
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = editPulangStart,
+                                onValueChange = { editPulangStart = it },
+                                label = { Text("Pulang Mulai", fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = SleekPrimary,
+                                    unfocusedBorderColor = SleekOutline,
+                                    focusedTextColor = SleekOnBackground,
+                                    unfocusedTextColor = SleekOnBackground
+                                )
+                            )
+                            OutlinedTextField(
+                                value = editPulangEnd,
+                                onValueChange = { editPulangEnd = it },
+                                label = { Text("Pulang Selesai", fontSize = 11.sp) },
+                                modifier = Modifier.weight(1f),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = SleekPrimary,
+                                    unfocusedBorderColor = SleekOutline,
+                                    focusedTextColor = SleekOnBackground,
+                                    unfocusedTextColor = SleekOnBackground
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(
+                            onClick = {
+                                viewModel.updateSchedules(editMasukStart, editMasukEnd, editPulangStart, editPulangEnd)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SleekPrimary),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth().height(42.dp)
+                        ) {
+                            Text("Simpan Jadwal Amplitudo", fontWeight = FontWeight.Black, fontSize = 12.sp)
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
 
                         // SECTION: Historical Log Logs
                         Row(
@@ -1527,4 +1844,39 @@ fun FaceBoundingBoxOverlay(detectionState: DetectionState) {
 @Composable
 fun rememberScrollState(): androidx.compose.foundation.ScrollState {
     return androidx.compose.foundation.rememberScrollState()
+}
+
+@Composable
+fun RowScope.StatisticItem(
+    weight: Float,
+    title: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tintColor: Color
+) {
+    Column(
+        modifier = Modifier
+            .weight(weight),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tintColor.copy(alpha = 0.85f),
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = title,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            color = SleekOnBackground.copy(alpha = 0.5f)
+        )
+        Text(
+            text = value,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = SleekOnBackground
+        )
+    }
 }
