@@ -1,0 +1,3 @@
+// Placeholder for mobilefacenet.tflite.
+// In a real device, replace this file with the actual 192-dimensional MobileFaceNet TFLite model binary.
+// The app will load this model or enter Demo Fallback Mode automatically if the model file is not a valid TFLite format or is empty.

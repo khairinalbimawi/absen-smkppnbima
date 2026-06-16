@@ -1,0 +1,6 @@
+{
+  "name": "SI-AKSI Presensi Siswa",
+  "description": "Modul presensi wajah siswa on-device terintegrasi SI-AKSI SMKPP Negeri Bima dan Google Sheets",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
